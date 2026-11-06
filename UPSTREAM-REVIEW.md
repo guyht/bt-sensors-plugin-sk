@@ -27,3 +27,7 @@ not a claim of passing CI, deployment readiness or completed hardware validation
 
 Keep boat identity, credentials, live data, custom release suffixes and deployment
 scripts out of an upstream submission. Publish nothing to the parent until approved.
+
+## Preparation results — 6 November 2026
+
+JavaScript syntax checks passed. Upstream has no package-lock.json, so npm ci cannot run. Decoder/identification tests and hardware validation remain pending. The owner-specific battery-alert override is absent.
