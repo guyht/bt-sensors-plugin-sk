@@ -707,9 +707,34 @@ module.exports =   function (app) {
 				
 				})
 		}
-		function findDevices (discoveryTimeout) {
+		async function findDevices (discoveryTimeout) {
 			const startNumber = starts
 			plugin.setStatusText("Scanning for new Bluetooth devices...");
+
+			// GENNETAY PATCH -- re-assert discovery before every sweep.
+			//
+			// Discovery can be left off by anything that touches the adapter: the
+			// post-connect kick in BTSensor.js (see BTSensor.js.patch), a bluetoothd
+			// state-machine wedge, a controller that never finished a scan-disable.
+			// Nothing else ever re-checks -- the isDiscovering() test further down in
+			// start() runs exactly once, at startup. So one lost StartDiscovery race
+			// silently ended ALL advertisement traffic for the life of the process,
+			// and the MissingSensor retry immediately below could not recover it
+			// either, because that path needs adapter.devices() to list the MAC and
+			// BlueZ only lists what it is currently hearing.
+			//
+			// This is the safety net for the whole BLE stack: it bounds any such
+			// failure to one discoveryInterval (10 s), with no SignalK restart and no
+			// radio reset. Measured 2026-07-29, before it existed: 5 of 7 sensors
+			// dead for 30 minutes, and bt-watchdog never noticed.
+			try {
+				if (!await adapter.isDiscovering()) {
+					plugin.debug("Discovery is off -- restarting the scanner")
+					await startScanner(options)
+				}
+			} catch (e) {
+				plugin.debug(`Could not verify discovery state: ${e.message}`)
+			}
 
 			adapter.devices().then( (macs)=>{
 				if (startNumber != starts ) {

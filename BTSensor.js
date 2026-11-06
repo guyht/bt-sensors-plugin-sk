@@ -705,36 +705,77 @@ class BTSensor extends EventEmitter {
                 }
             }
 
-            try {
-
-               /* CAUTION: HACK AHEAD 
-
-                    Bluez for some cockamamie reason (It's 2025 for chrissake. 
-                    BLUETOOTH ISN'T JUST FOR DESKTOPS ANYMORE, BLUEZ DEVS!)
-                    SUSPENDS scanning while connected to a device.
-
-                    The next line of code gives the scanner a kick in the arse, 
-                    starting it up again so, I dunno, another device might be able 
-                    to connect and sensor classes could maybe get beacon updates.
-
-                    You know, the little things.
-                */
-                await this._adapter.helper.callMethod('StopDiscovery')
-
-                //await this._adapter.helper.callMethod('SetDiscoveryFilter', {
-                //    Transport: new Variant('s', this._adapter?._transport??"le")
-                //})
-                await this._adapter.helper.callMethod('StartDiscovery')   
-                
-            } catch (e){
-                //probably ignorable error. probably.
-                console.log(e)
-            }
+            // GENNETAY PATCH -- keep the scanner running after a GATT connect.
+            //
+            // BlueZ really does suspend scanning while a connection is set up, so
+            // the kick upstream added here is necessary. The way it did it was not:
+            //
+            //     await this._adapter.helper.callMethod('StopDiscovery')
+            //     await this._adapter.helper.callMethod('StartDiscovery')
+            //     } catch (e){ console.log(e) }   // "probably ignorable error"
+            //
+            // StopDiscovery returns before the controller has actually stopped, so
+            // the immediate StartDiscovery can reach bluetoothd mid-teardown and
+            // throw org.bluez.Error.InProgress -- which that catch discarded,
+            // leaving discovery OFF for the life of the process. Every
+            // advertisement sensor then dies silently while the GATT-connected
+            // ones (the Renogy packs) keep working, because they need no
+            // discovery at all. That asymmetry is what makes the failure so
+            // confusing from the dashboard: the batteries look fine.
+            //
+            // The RTL8761B loses that race often -- its scan-disable path is slow
+            // (dmesg "Opcode 0x2042 tx timeout"). Measured 2026-07-29: 6
+            // InProgress in 24 h, and EVERY scan cycle that logged one lost all
+            // five advertisement sensors until the next restart.
+            //
+            // So: never StopDiscovery, and only start when not already scanning.
+            // callMethod('StartDiscovery') rather than adapter.startDiscovery()
+            // is deliberate -- node-ble's wrapper re-applies SetDiscoveryFilter
+            // and would drop DuplicateData:true, which the Govee H5179 needs. The
+            // filter is per-D-Bus-client and persists, so a bare StartDiscovery
+            // keeps the Transport/DuplicateData that startScanner() set.
+            await this.ensureDiscovering()
               /* END HACK*/
                  
         })
 
     }
+
+    // GENNETAY PATCH -- make sure the adapter is actually scanning.
+    //
+    // Called after every GATT connect, because BlueZ suspends scanning during
+    // connection setup and does not always resume it.
+    //
+    // The subtlety: org.bluez.Error.InProgress does NOT mean "discovery is
+    // already on". It means bluetoothd's discovery state machine is
+    // mid-transition, and if that transition ends in DISCOVERY_STOPPED the
+    // scanner stays off. So the result is re-checked rather than assumed, and a
+    // failure is reported instead of swallowed -- the old silent failure was the
+    // difference between "one sensor is quiet" and "every advertisement sensor
+    // on the boat has gone dark", with nothing in the log to say which.
+    async ensureDiscovering(retries=2, retryInterval=500) {
+        if (!this._adapter) return false
+        for (let attempt = 0; attempt <= retries; attempt++) {
+            if (attempt > 0)
+                await new Promise((r) => setTimeout(r, retryInterval))
+            try {
+                if (await this._adapter.isDiscovering())
+                    return true
+            } catch (e) {
+                this.debug(`ensureDiscovering: cannot read discovery state: ${e.message}`)
+            }
+            try {
+                await this._adapter.helper.callMethod('StartDiscovery')
+                this.debug(`(${this.getName()}) discovery was off after connect -- restarted it`)
+                return true
+            } catch (e) {
+                this.debug(`(${this.getName()}) StartDiscovery failed (attempt ${attempt+1}/${retries+1}): ${e.message}`)
+            }
+        }
+        this.setError("Discovery is off and could not be restarted -- advertisement sensors will go silent")
+        return false
+    }
+
     async deviceDisconnect(){
         await this.stopAllGATTNotifications()
         await this.device.disconnect()
