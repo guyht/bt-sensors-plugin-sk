@@ -31,3 +31,7 @@ not a claim of passing CI, deployment readiness or completed hardware validation
 
 Keep boat identity, credentials, live data, custom release suffixes and deployment
 scripts out of an upstream submission. Publish nothing to the parent until approved.
+
+## Preparation results — 6 November 2026
+
+Reference patch applies cleanly to the recorded upstream base. It excludes scanner-recovery changes and remains an alternative to evaluate against PR #199; no final design has been selected.
